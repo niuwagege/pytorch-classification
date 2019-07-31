@@ -70,7 +70,10 @@ parser.add_argument('-c', '--checkpoint', default='checkpoint', type=str, metava
                     help='path to save checkpoint (default: checkpoint)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--loadfeaturemap', default=0, type=int, metavar='PATH',
+                    help='whether just load feature map')
 # Architecture
+parser.add_argument('--num-feature',default=2, type=int)
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
                     choices=model_names,
                     help='model architecture: ' +
@@ -128,15 +131,15 @@ def main():
         mkdir_p(args.checkpoint)
 
     # Data loading code
-    trainlabel = os.path.join(args.labelfolder, 'train.txt')
-    vallabel = os.path.join(args.labelfolder, 'val.txt')
+    trainlabel = os.path.join(args.labelfolder, 'train_label.txt')
+    vallabel = os.path.join(args.labelfolder, 'val_label.txt')
     image_folder = args.imagefolder
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
     train_loader = torch.utils.data.DataLoader(
         TxtImageLabel(image_folder, trainlabel,transforms.Compose([
-            RandomVerticalFlip,
+            RandomVerticalFlip(),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
@@ -156,6 +159,12 @@ def main():
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
         model = models.__dict__[args.arch](pretrained=True)
+    elif args.arch.startswith('resnext') and args.arch[-1] is 'v':
+        model = models.__dict__[args.arch](
+                    baseWidth=args.base_width,
+                    cardinality=args.cardinality,
+                    num_f = args.num_feature
+                )
     elif args.arch.startswith('resnext'):
         model = models.__dict__[args.arch](
                     baseWidth=args.base_width,
@@ -181,16 +190,32 @@ def main():
     # Resume
     title = 'ImageNet-' + args.arch
     if args.resume:
-        # Load checkpoint.
-        print('==> Resuming from checkpoint..')
-        assert os.path.isfile(args.resume), 'Error: no checkpoint directory found!'
-        args.checkpoint = os.path.dirname(args.resume)
-        checkpoint = torch.load(args.resume)
-        best_acc = checkpoint['best_acc']
-        start_epoch = checkpoint['epoch']
-        model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        logger = Logger(os.path.join(args.checkpoint, 'log.txt'), title=title, resume=True)
+        if args.loadfeaturemap:
+            # Load checkpoint.
+            print('==> Resuming from checkpoint..')
+            assert os.path.isfile(args.resume), 'Error: no checkpoint directory found!'
+            args.checkpoint = os.path.dirname(args.resume)
+            checkpoint = torch.load(args.resume)
+            best_acc = 0
+            start_epoch = 0
+            model_dict = model.state_dict()
+            pretrained_dict = checkpoint['state_dict']
+            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape == model_dict[k].shape}
+            model_dict.update(pretrained_dict) 
+            model.load_state_dict(model_dict)
+            logger = Logger(os.path.join(args.checkpoint, 'log.txt'), title=title)
+            logger.set_names(['Learning Rate', 'Train Loss', 'Valid Loss', 'Train Acc.', 'Valid Acc.'])
+        else:
+             # Load checkpoint.
+            print('==> Resuming from checkpoint..')
+            assert os.path.isfile(args.resume), 'Error: no checkpoint directory found!'
+            args.checkpoint = os.path.dirname(args.resume)
+            checkpoint = torch.load(args.resume)
+            best_acc = checkpoint['best_acc']
+            start_epoch = checkpoint['epoch']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            logger = Logger(os.path.join(args.checkpoint, 'log.txt'), title=title, resume=True)
     else:
         logger = Logger(os.path.join(args.checkpoint, 'log.txt'), title=title)
         logger.set_names(['Learning Rate', 'Train Loss', 'Valid Loss', 'Train Acc.', 'Valid Acc.'])
@@ -257,10 +282,9 @@ def train(train_loader, model, criterion, optimizer, epoch, use_cuda):
         loss = criterion(outputs, targets)
 
         # measure accuracy and record loss
-        prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
+        prec1= accuracy(outputs.data, targets.data)
         losses.update(loss.data[0], inputs.size(0))
         top1.update(prec1[0], inputs.size(0))
-        top5.update(prec5[0], inputs.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -272,7 +296,7 @@ def train(train_loader, model, criterion, optimizer, epoch, use_cuda):
         end = time.time()
 
         # plot progress
-        bar.suffix  = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | top1: {top1: .4f} | top5: {top5: .4f}'.format(
+        bar.suffix  = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | top1: {top1: .4f}'.format(
                     batch=batch_idx + 1,
                     size=len(train_loader),
                     data=data_time.val,
@@ -281,7 +305,6 @@ def train(train_loader, model, criterion, optimizer, epoch, use_cuda):
                     eta=bar.eta_td,
                     loss=losses.avg,
                     top1=top1.avg,
-                    top5=top5.avg,
                     )
         bar.next()
     bar.finish()
@@ -314,17 +337,16 @@ def test(val_loader, model, criterion, epoch, use_cuda):
         loss = criterion(outputs, targets)
 
         # measure accuracy and record loss
-        prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
+        prec1 = accuracy(outputs.data, targets.data)
         losses.update(loss.data[0], inputs.size(0))
         top1.update(prec1[0], inputs.size(0))
-        top5.update(prec5[0], inputs.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
         # plot progress
-        bar.suffix  = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | top1: {top1: .4f} | top5: {top5: .4f}'.format(
+        bar.suffix  = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | top1: {top1: .4f} '.format(
                     batch=batch_idx + 1,
                     size=len(val_loader),
                     data=data_time.avg,
@@ -333,7 +355,6 @@ def test(val_loader, model, criterion, epoch, use_cuda):
                     eta=bar.eta_td,
                     loss=losses.avg,
                     top1=top1.avg,
-                    top5=top5.avg,
                     )
         bar.next()
     bar.finish()

@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.nn import init
 import torch
 
-__all__ = ['resnext50', 'resnext101', 'resnext152']
+__all__ = ['resnext50', 'resnext101', 'resnext152','resnext50v','resnext152v']
 
 class Bottleneck(nn.Module):
     """
@@ -97,7 +97,7 @@ class ResNeXt(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], 2)
         self.layer3 = self._make_layer(block, 256, layers[2], 2)
         self.layer4 = self._make_layer(block, 512, layers[3], 2)
-        self.avgpool = nn.AvgPool2d(7)      
+        self.avgpool = nn.AdaptiveAvgPool2d(1)      
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
         for m in self.modules():
@@ -170,4 +170,15 @@ def resnext152(baseWidth, cardinality):
     Construct ResNeXt-152.
     """
     model = ResNeXt(baseWidth, cardinality, [3, 8, 36, 3], 1000)
+    return model
+
+def resnext50v(baseWidth, cardinality, num_f):
+    model = ResNeXt(baseWidth, cardinality, [3, 4, 6, 3], num_f)
+    return model
+
+def resnext152v(baseWidth, cardinality, num_f):
+    """
+    Construct ResNeXt-152.
+    """
+    model = ResNeXt(baseWidth, cardinality, [3, 8, 36, 3], num_f)
     return model

@@ -38,7 +38,7 @@ def make_dataset(label_txt_path, image_folder):
     for line in lines:
         image_file, label = line.split(',')
         image_path = os.path.join(image_folder, image_file)
-        images.append((image_path, label))
+        images.append((image_path, int(label)))
     return images
 
 
